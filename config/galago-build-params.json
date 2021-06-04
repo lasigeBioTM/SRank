@@ -1,0 +1,20 @@
+{
+    "fileType": "text",
+    "indexPath": "/mnt/data/jferreira_data/cord-galago-index/",
+    "inputPath": "/mnt/data/jferreira_data/cord/2021-05-24/to_index",
+    "stemmer": [
+        "porter"
+    ],
+    "nonStemmedPostings": true,
+    "stemmedPostings": true,
+    "tokenizer": {
+        "fields": [
+            "title",
+            "text"
+        ]
+    },
+    "corpus": true,
+    "distrib": 20,
+    "server": true,
+    "port": 54321
+}
