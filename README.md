@@ -53,7 +53,15 @@ We could use an idea similar to Step 2 here, where we only classify a document i
 
 **Requirements**:
 - [ ] A squad-trained transformer: we want the "BERT-meat" of it, not the final layers
-- [ ] A train/test split of the BioASQ and Synergy data
+- [x] A train/test split of the BioASQ and Synergy data
+
+**Commands**:
+```bash
+# Merge Task B and Task Synergy data
+python src/merge_split.py \
+  data/bioasq-training-9b.json \
+  data/bioasq-training-synergy-v1.json
+```
 
 
 ## Step 4
@@ -61,7 +69,7 @@ We could use an idea similar to Step 2 here, where we only classify a document i
 Given a question and an abstract, we must extract the relevant snippets. We will do this by leveraging on the self-attention layers between the question and the abstract. We will train on the existing BioASQ and Synergy data to find a way to convert the attention layers into spans of text, which will be the snippets. Snippets will then extend to contain full sentences.
 
 **Requirements**:
-- [ ] A train/test split of the BioASQ and Synergy data
+- [x] A train/test split of the BioASQ and Synergy data
 
 
 ## Step 5
