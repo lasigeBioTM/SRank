@@ -45,9 +45,22 @@ In the worst case, w can make `M_1 = M_0`, which corresponds to this step never 
 
 ## Step 3
 
-Use a transformer to classify a document as "relevant" or "non-relevant", training on the data we have. This step is actually independent of the previous ones. The idea here is to train a transformer with SQuAD and then BioASQ data to be able to recognize what abstracts answer a given question.
+Train a transformer to detect whether a question and sentence are related. We use the data we have from BioASQ to compile a set of question-sentence pairs. To do so, we look at the questions and the golden snippets, splitting the snippets into sentences. We then generate negative samples by pairing questions with sentences from unrelated abstracts, as well as leverage on the feedback from previous synergy rounds for negative samples.
 
-In this, we will need to generate negative question/answer pairs.
+**Requirements**:
+- [x] The negative instances from the golden feedback of previous Synergy tasks
+- [x] A sample of negative (unrelated) question-sentence pairs
+
+**Commands**:
+```bash
+python src/sentence_classification/negative_sample.py
+
+BLA BLA BLA
+```
+
+## Step 4
+
+Run the questions through the galago index and extract `M_0` documents. Find the abstracts and split into sentences. Run the model from the previous step to classify all the sentences of the `M_0` abstracts. Those are the snippets that we choose, and so mark the documents the sentences come from as relevant
 
 We could use an idea similar to Step 2 here, where we only classify a document if the score of the previous documents hasn't been steadily decreasing.
 
