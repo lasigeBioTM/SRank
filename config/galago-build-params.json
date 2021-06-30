@@ -1,20 +1,13 @@
 {
     "fileType": "text",
-    "indexPath": "/mnt/data/jferreira_data/cord-galago-index/",
-    "inputPath": "/mnt/data/jferreira_data/cord/2021-05-24/to_index",
+    "indexPath": "/mnt/data/jferreira_data/cord-galago-index-2/",
+    "inputPath": "/mnt/data/jferreira_data/cord/2021-05-31/to_index",
     "stemmer": [
-        "porter"
+        "porter", "krovetz"
     ],
     "nonStemmedPostings": true,
     "stemmedPostings": true,
-    "tokenizer": {
-        "fields": [
-            "title",
-            "text"
-        ]
-    },
     "corpus": true,
-    "distrib": 20,
     "server": true,
     "port": 54321
 }

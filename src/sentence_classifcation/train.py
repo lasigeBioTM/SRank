@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 
 import torch
-import transformers
-from tqdm.auto import tqdm
+import transformers  # type: ignore
+from tqdm.auto import tqdm  # type: ignore
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,

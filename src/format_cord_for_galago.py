@@ -10,10 +10,7 @@ def format_paper(paper):
     title = paper['title']
     abstract = paper['abstract']
 
-    return textwrap.dedent(f'''\
-        <TITLE>{title}</TITLE>
-        <TEXT>{abstract}</TEXT>
-    ''')
+    return title + '\n' + abstract
 
 
 def get_arguments():
@@ -36,7 +33,7 @@ def get_arguments():
 
 
 def read_metadata(filename):
-    metadata = pd.read_csv(filename, low_memory=True)
+    metadata = pd.read_csv(filename, low_memory=False)
 
     # We want only papers with title, abstract and pubmed_id
     metadata = metadata[

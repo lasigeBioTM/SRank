@@ -1,130 +1,81 @@
-# Given a question, extract a set of non-relevant sentences:
-# - directly from the negatives found in the synergy dataset
-# - by extracting random sentences from the non-relevant CORD-19 abstracts
-#
-# We generate `N` question-sentence pairs, using only the questions we have on
-# the train dataset, and do it independently: not a fixed number of sentences
-# per question but a total of `N` question-senten pairs. In each step, we seect
-# a random question to process
+# We need to convert the following into a dataset of question/sentence pairs
+# from the BioASQ synergy feedback files, which can be used to derive positive
+# and negative pairs.
 
-from __future__ import annotations
+# Search each question with galago and get the abstract of the papers that are
+# not related to the question. Sample the sentences that are more highly related
+# to the questions based on the CLS embedding of the sentences and a cosine
+# similarity of the vectors.
 
-import itertools
+# Keep only a fraction of the negative sentences so that the overall ratio of
+# positive to negative instances is some defined constant
+
+# These options can be tuned by command line flags
+
+# For this to work, we need to have the data above in hand. We also need to run
+# all questions through the galago index before in order to gather a few
+# unrelated documents before hand (see `src/retrieve.py`)
+
+import argparse
 import json
-import random
-import re
-
-import pandas as pd
-import spacy
-from tqdm.auto import tqdm
 
 
-def read_json(filename):
-    with open(filename) as f:
-        return json.load(f)
+def get_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description='Sample a selection of relevant and non-relevant sentences '
+                    'to go along with each question in order to create a '
+                    'dataset of question/sentence pairs that can be used to '
+                    'train a transformer model in order to identify relevant '
+                    'abstracts snippets to answer a question.'
+    )
+
+    parser.add_argument(
+        'questions', metavar='QUESTIONS',
+        help='The file containing the training questions. The file must be in '
+             'the BioASQ format, and must contain a list of snippets and a '
+             'list of relevant documents for each question. Snippets in this '
+             'file are considered positive instances, unless they are marked '
+             'with the `"golden": false` property. Non-golden snippets are '
+             'used as negative instances (see the `--sample` and `--ratio` '
+             'flags).'
+    )
+
+    parser.add_argument(
+        'docset', metavar='DOCSET',
+        help='The snippets extracted from a set of documents. This can be '
+             'created with the `src/make_docset.py` file. These snippets '
+             'will be used to sample negative instances. You can provide '
+             'a dummy argument (eg. "-") if you know that there are enough '
+             'negative instances in the input to not require sampling.'
+    )
+
+    parser.add_argument(
+        '-o', '--only-generate', action='store_true',
+        help='By default, this script gathers negative instances from the '
+             'input (if any exists). By providing this flag, the script skips '
+             'these known instances, ensuring that all the results are sampled '
+             'from the docset.'
+    )
+
+    parser.add_argument(
+        '-r', '--ratio', type=float, default=4,
+        help='The amount of negative instances generated for each positive '
+             'instance. Each positive question-snippet pair is counted, so '
+             'the result contains each question with approximately the same '
+             'frequency that it appears in the input.'
+    )
+
+    parser.add_argument(
+        '-o', '--output',
+        help='Where to place the output. Defaults to standard output.'
+    )
+
+    return parser.parse_args()
 
 
-def process_dataset(dataset) -> dict[str, list[str]]:
-    return {
-        question['id']: [
-            sentence.text
-            for snippet in question['snippets']
-            for sentence in nlp(snippet['text']).sents
-        ]
-        for question in tqdm(dataset)
-    }
+def main() -> None:
+    args = get_arguments()
 
 
-def token_len(sentence):
-    return len(re.split(r'[\s.,:;]', sentence))
-
-
-def get_abstract_sentences() -> list[tuple[str, str]]:
-    abstract_sentences = read_json('data/abstract_sentences.json')
-
-    return [
-        (sentence, paper_id)
-        for paper_id, sentences in tqdm(abstract_sentences.items(), total=len(abstract_sentences))
-        for sentence in sentences
-        if len(sentence) >= 20 and token_len(sentence) >= 7
-    ]
-
-
-print('Loading spacy\'s NLP pipeline ...')
-nlp = spacy.load('en_core_web_lg', exclude=[
-    'ner',
-    'attribute_ruler',
-    'lemmatizer',
-])
-
-print('Reading abstract sentences ...')
-all_abstract_sentences = get_abstract_sentences()
-
-print('Reading training and negative data ...')
-questions_ds = read_json('data/merge.train.json') + read_json('data/merge.test.json')
-negatives_ds = read_json('data/merge.negative.json')
-
-print('Splitting snippets into sentences (positive and negative)...')
-known_positives = process_dataset(questions_ds)
-known_negatives = process_dataset(negatives_ds)
-
-
-class NegativeGenerator:
-    def __init__(self, prob_of_existing=0.5, seed=42):
-        self.questions = {
-            question['id']: question
-            for question in questions_ds
-        }
-
-        self.question_ids: list[str] = list(self.questions)
-
-        self.prob_of_existing = prob_of_existing
-
-        self.rand = random.Random(seed)
-
-        self.negative_pool: list[tuple[str, str]] = [
-            (self.questions[question_id]['body'], sentence)
-            for question_id, sentences in known_negatives.items()
-            if question_id in self.questions
-            for sentence in sentences
-        ]
-
-    def generate(self):
-        if self.negative_pool and self.rand.random() < self.prob_of_existing:
-            idx = self.rand.randrange(len(self.negative_pool))
-
-            return self.negative_pool.pop(idx)
-
-        # Grab a random question
-        question = self.questions[
-            self.rand.choice(self.question_ids)
-        ]
-
-        while True:
-            random_sentence, paper_id = self.rand.choice(
-                all_abstract_sentences)
-
-            if paper_id not in question['documents']:
-                # TODO: Alternatively, we could accept sentences from relevant
-                # papers if they do not overlap with an known golden snippet
-                break
-
-        return (question['body'], random_sentence)
-
-    def __iter__(self):
-        while True:
-            yield self.generate()
-
-
-# Let's find a number of negative question-sentence pairs equal in number to the
-# amount of positive pairs. For that, we need to know how many positive pairs we
-# have. That is the number of snippets
-generator = NegativeGenerator()
-
-all_negatives = list(itertools.islice(
-    generator,
-    sum(len(sentences) for sentences in known_positives.values())
-))
-
-with open('data/question-sentence-negative-pairs.json', 'w') as f:
-    json.dump(all_negatives, f)
+if __name__ == '__main__':
+    main()

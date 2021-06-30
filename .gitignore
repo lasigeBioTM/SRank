@@ -1,1 +1,3 @@
 /galago-*-bin/
+.dmypy.json
+/runs/

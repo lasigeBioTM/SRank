@@ -1,50 +1,136 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
-import multiprocessing
 import os
 import subprocess
+import sys
 import typing
+from collections import defaultdict
 
-import pandas as pd
 import spacy
-from tqdm import tqdm
 
 
-class Query(typing.TypedDict):
-    query_id: str
-    query_text: str
+class Question(typing.TypedDict):
+    id: str
+    body: str
 
 
-class DocScore:
+class DocScore(typing.TypedDict):
     rank: int
     score: float
 
 
-def retrieve_documents(queries, n, index_dirname, galago_path, nlp):
-    galago_output = run_galago(queries, n, index_dirname, galago_path, nlp)
+class GalagoItem(typing.TypedDict):
+    number: str
+    text: str
 
-    result: dict[str, dict[str, DocScore]] = {}
+
+class Retriever:
+    def __init__(
+        self,
+        *,
+        format_question: typing.Callable[[Question], GalagoItem],
+        galago_path: str,
+        index: str,
+        requested: int = 100,
+        scorer: str | None = None,
+        thread_count: int = 1,
+    ):
+        self.format_question = format_question
+        self.galago_path = galago_path
+        self.index = index
+        self.requested = requested
+        self.scorer = scorer
+        self.thread_count = thread_count
+
+    def retrieve(self, questions: list[Question]) -> dict[str, dict[str, DocScore]]:
+        # Create a temporary file to contain the galago query parameters,
+        # including the questions being searched. This file will be deleted
+        # after galago runs.
+
+        query_filename = 'results/galago_query.json'
+
+        self.write_galago_query(questions, query_filename)
+
+        galago_output = self.run_galago(query_filename)
+
+        os.remove(query_filename)
+
+        return process_galago_output(galago_output)
+
+    def write_galago_query(
+        self,
+        questions: list[Question],
+        query_filename: str,
+    ) -> None:
+        config = {
+            'threadCount': self.thread_count,
+            'caseFold': True,
+            'index': self.index,
+            'requested': self.requested,
+            'queries': [
+                self.format_question(question)
+                for question in questions
+            ]
+        }
+
+        if self.scorer is not None:
+            config['scorer'] = self.scorer
+
+        with open(query_filename, 'w') as f:
+            json.dump(config, f)
+
+    def run_galago(self, query_filename: str) -> str:
+        galago_process = subprocess.Popen(
+            args=[
+                self.galago_path,
+                'threaded-batch-search',
+                query_filename,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        result, _ = galago_process.communicate()
+
+        return result.decode('utf8')
+
+
+def process_galago_output(galago_output: str) -> dict[str, dict[str, DocScore]]:
+    result: dict[str, dict[str, DocScore]] = defaultdict(dict)
 
     for line in galago_output.splitlines():
         fields = line.split()
 
-        if not fields or fields[-1] != 'galago':
+        if not fields:
+            # Ignore lines that do not conform to the expected format
             continue
 
         try:
-            qid = fields[0]
-            doc_id = fields[2].split('/')[-1].split('.')[0]
+            # Process the fields. If something goes wrong, ignore this line
+            # This effectively could lead to data loss, but I think galago
+            # (at least in the current version) never fails to uphold the
+            # criteria I'm assuming here
+            question_id = fields[0]
+
+            # Note that the document is given with a full filename. I am
+            # interested only in the basename of the file (which is its ID)
+            try:
+                document_id = fields[2].split('/')[-1].split('.')[0]
+            except:
+                print(fields)
+                raise
+
             rank = int(fields[3])
             score = float(fields[4])
         except ValueError:
+            # Again, if something does not conform to the assumptions,
+            # ignore the line
             continue
 
-        if qid not in result:
-            result[qid] = {}
-
-        result[qid][doc_id] = {
+        result[question_id][document_id] = {
             'rank': rank,
             'score': score,
         }
@@ -52,248 +138,193 @@ def retrieve_documents(queries, n, index_dirname, galago_path, nlp):
     return result
 
 
-def run_galago(queries, n, index_dirname, galago_path, nlp):
-    galago_filename = 'results/galago_query.json'
+def format_question_flat_combine(question: Question, nlp: spacy.language.Language) -> GalagoItem:
+    document = nlp(question['body'])
 
-    write_galago_query(queries, index_dirname, n, galago_filename, nlp)
-
-    galago_process = subprocess.Popen(
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        args=[
-            galago_path,
-            'threaded-batch-search',
-            galago_filename,
-        ]
-    )
-
-    print('Running galago ...')
-
-    try:
-        result, _ = galago_process.communicate(timeout=600)
-    except subprocess.TimeoutExpired:
-        galago_process.kill()
-        result, _ = galago_process.communicate()
-
-    print('Done')
-
-    os.remove(galago_filename)
-
-    return result.decode('utf8')
-
-
-def write_galago_query(queries: list[Query], index_dirname, n, galago_filename, nlp):
-    result = {
-        'threadCount': 20,
-        'caseFold': True,
-        'index': index_dirname,
-        'requested': n,
-        'scorer': 'bm25',
-        # 'mu': 2000,
-        # 'lambda': 0.2,
-        'queries': [format_query(q['query_id'], q['query_text'], nlp) for q in queries]
-    }
-
-    with open(galago_filename, 'w') as f:
-        json.dump(result, f)
-
-
-def format_query(qid, body, nlp):
-    document = nlp(body)
-
-    tokens = [
+    tokens: list[str] = [
         token.text
         for token in document
         if not token.is_punct and not token.is_space and not token.is_stop
     ]
 
     return {
-        'number': str(qid),
+        'number': question['id'],
         'text': '#combine({})'.format(' '.join(tokens)),
     }
 
 
-def process_galago_results(galago_results: dict[str, dict[str, DocScore]], queries):
-    """
-    Process document retrieval files to be used by AUEB system
-    """
+def format_question_with_dependency_operator(
+    question: Question,
+    nlp: spacy.language.Language,
+    operator: str
+) -> GalagoItem:
+    document = nlp(question['body'])
 
-    for query in queries:
-        results_for_query = galago_results.get(query['query_id'])
+    noun_chunks = list(document.noun_chunks)
 
-        if results_for_query:
-            update_query(query, results_for_query)
+    def in_noun_chunk(token: spacy.tokens.Token) -> bool:
+        return any(chunk.start <= token.i < chunk.end for chunk in noun_chunks)
 
-
-def update_query(query, galago_results_for_query):
-    retrieved_documents = retrieve_documents_for_query(
-        query,
-        galago_results_for_query
-    )
-
-    query['retrieved_documents'] = retrieved_documents
-
-    query['num_ret'] = len(retrieved_documents)
-
-    query['num_rel_ret'] = len(
-        set(galago_results_for_query) &
-        set(query['relevant_documents'])
-    )
-
-
-def retrieve_documents_for_query(query, query_results):
-    return [{
-        'doc_id': doc_id,
-        'rank': document['rank'],
-        'bm25_score': document['score'],
-        'norm_bm25_score': document['score'],
-        'is_relevant': doc_id in query['relevant_documents'],
-        'score': document['score'],
-    } for doc_id, document in query_results.items()]
-
-
-def get_metadata(filename):
-    metadata = pd.read_csv(filename, low_memory=False)
-
-    metadata = metadata[
-        pd.notna(metadata['title']) &
-        pd.notna(metadata['abstract']) &
-        pd.notna(metadata['pubmed_id'])
+    pieces = [
+        token.text
+        for token in document
+        if (
+            not token.is_punct and
+            not token.is_space and
+            not token.is_stop and
+            not in_noun_chunk(token)
+        )
     ]
 
-    metadata = metadata[['cord_uid', 'title', 'abstract', 'publish_time']]
+    for chunk in noun_chunks:
+        keep = [
+            token.text
+            for token in chunk
+            if (
+                not token.is_punct and
+                not token.is_space and
+                not token.is_stop
+            )
+        ]
 
-    return metadata.drop_duplicates('cord_uid').set_index('cord_uid')
-
-
-def get_docset(document_ids, use_mp):
-    result: dict[str] = {}
-
-    if use_mp:
-        with multiprocessing.Pool(processes=20) as pool:
-            doc_objects = pool.map(get_doc_text, document_ids)
-
-            for i, doc in enumerate(doc_objects):
-                result[str(document_ids[i])] = doc
-    else:
-        for doc_id in tqdm(document_ids):
-            result[str(doc_id)] = get_doc_text(doc_id)
-
-    for doc_id in document_ids:
-        if result.get(str(doc_id), None) is None:
-            if str(doc_id) in result:
-                del result[str(doc_id)]
-
-    return result
-
-
-def get_doc_text(doc_id) -> dict[typing.Literal['title', 'abstract', 'publish_time'], str] | None:
-    """
-    Retrieve title and abstract of a CORD-19 paper
-    """
-    global metadata
-
-    try:
-        row = dict(metadata.loc[doc_id])
-    except KeyError:
-        return None
+        if len(keep) == 0:
+            continue
+        elif len(keep) == 1:
+            pieces.append(keep[0])
+        else:
+            pieces.append(
+                '#{operator}({parts})'.format(
+                    operator=operator,
+                    parts=' '.join(keep)
+                )
+            )
 
     return {
-        'title': row['title'],
-        'abstractText': row['abstract'],
-        'publicationDate': row['publish_time'],
+        'number': str(question['id']),
+        'text': '#combine({})'.format(' '.join(pieces)),
     }
 
 
-def get_arguments():
+def get_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        'Retrieve relevant documents for a set of queries'
+        description='Retrieve relevant documents for a set of questions'
     )
 
     parser.add_argument(
-        '-q', '--questions-filename',
-        default='data/merged/questions.train.json',  # TODO: Create a `merge_data.py`
+        'questions_filename', metavar='QUESTIONS',
+        help='The BioASQ-formatted list of questions'
     )
 
     parser.add_argument(
-        '-i', '--index',
-        default='/mnt/data/jferreira_data/cord-galago-index/'  # TODO: Make this a mandatory argument?
+        'galago_index', metavar='GALAGO-INDEX',
     )
 
     parser.add_argument(
         '-g', '--galago-path',
-        default='galago-3.19-bin/bin/galago',  # TODO: Default to the highest galago-*-bin/bin/galago
+        help='The path to the gaalgo executable. The default is the path '
+             '`./galago-*-bin/bin/galago`, where * matches the highest galago '
+             'installation that can be found with that glob pattern.'
     )
 
     parser.add_argument(
-        '-k', '--k', type=int, default=100,
+        '-k', '--requested', type=int, default=100,
+        help='The requestes number of documents to retrieve for each question. '
+             'Defaults to 100.'
     )
 
     parser.add_argument(
-        '-o', '--output', default='results/retrieved.json',
+        '-S', '--scorer',
+        help='The galago scorer to use. If unspecified, the scorer is the '
+             'default galago one. Some options for this argument are "bm25" '
+             'and "dirichlet".'
     )
 
     parser.add_argument(
         '-s', '--spacy-model', default='en_core_web_lg',
-    )
-
-    # TODO: Move the docset generation from this script and into another one
-
-    parser.add_argument(
-        '-m', '--multiprocess', action='store_true'
-    )
-
-    parser.add_argument(
-        '-d', '--docset-path', default='results/docset.json'
+        help='The spacy NLP model to use to tokenize sentences. We use this to '
+             'remove stop words, punctuation and irrelevant whitespace from '
+             'the questions, as well as to find noun chunks (see the '
+             '`--noun-chunk-operator` flag).'
     )
 
     parser.add_argument(
-        '-c', '--cord-metadata',
-        default='/mnt/data/jferreira_data/cord/2021-05-24/metadata.csv'
+        '-c', '--noun-chunk-operator',
+        help='If given, this flag describes the galago operator to use to group '
+             'noun chunks in the questions. This is a way of ensuring wighing '
+             'in the fact that this words appear sequentially in the question. '
     )
 
-    return parser.parse_args()
+    parser.add_argument(
+        '-t', '--thread-count', type=int, default=20,
+    )
+
+    parser.add_argument(
+        '-o', '--output',
+        help='Where to place the output. Defaults to standard output.'
+    )
+
+    args = parser.parse_args()
+
+    if args.galago_path is None:
+        try:
+            args.galago_path = get_highest_galago_path()
+        except IndexError:
+            parser.error('Cannot find galago on `galago-*-bin/bin/galago`.')
+
+    return args
 
 
-if __name__ == '__main__':
+def get_highest_galago_path() -> str:
+    paths = glob.glob('galago-*-bin/bin/galago')
+
+    paths.sort(
+        key=lambda p: p[7:-15].split('.'),
+        reverse=True,
+    )
+
+    return paths[0]
+
+
+def main() -> None:
     args = get_arguments()
+
+    with open(args.questions_filename) as f:
+        questions: list[Question] = json.load(f)
 
     nlp = spacy.load(args.spacy_model)
 
-    with open(args.questions_filename) as f:
-        questions = json.load(f)['questions']
+    if args.noun_chunk_operator is None:
+        def format_question(question: Question) -> GalagoItem:
+            return format_question_flat_combine(question, nlp)
+    else:
+        def format_question(question: Question) -> GalagoItem:
+            return format_question_with_dependency_operator(question, nlp, args.noun_chunk_operator)
 
-    queries = [{
-        'query_id': q['id'],
-        'query_text': q['body'],
-        'relevant_documents': q['documents']
-    } for q in questions]
-
-    galago_results = retrieve_documents(
-        queries,
-        n=args.k,
-        index_dirname=args.index,
+    retriever = Retriever(
+        format_question=format_question,
         galago_path=args.galago_path,
-        nlp=nlp
+        index=args.galago_index,
+        requested=args.requested,
+        scorer=args.scorer,
+        thread_count=args.thread_count,
     )
 
-    process_galago_results(galago_results, queries)
+    galago_results = retriever.retrieve(questions)
 
-    with open(args.output, 'w') as f:
-        json.dump({'queries': queries}, f)
+    # Notice that mypy does not really like me to spread the `question` variable
+    # with the doube asterisk operator. That's why I'm hinting this as a list of
+    # `Any`.
+    output: list[typing.Any] = [{
+        **question,
+        'documents': galago_results.get(question['id']),
+    } for question in questions]
 
-    global metadata
-    metadata = get_metadata(args.cord_metadata)
+    if args.output:
+        with open(args.output, 'w') as f:
+            json.dump(output, f)
+    else:
+        json.dump(output, sys.stdout)
 
-    document_ids = list({
-        doc_ids
-        for q in galago_results
-        for doc_ids in galago_results[q].keys()
-    })
 
-    docset = get_docset(document_ids, args.multiprocess)
-
-    with open(args.docset_path) as f:
-        json.dump(docset, f)
-
-    print('All done')
+if __name__ == '__main__':
+    main()

@@ -8,7 +8,7 @@ The main idea is the following:
 
 ## Step 1
 
-Use a BM25-like indexing procedure to retrieve `M_0` documents from some indexed local installation of pubmed (or other similar repository). Here `M` is a large number, typically `100`, but I think we can increase a little bit
+Use a BM25-like indexing procedure to retrieve `M_0` documents from some indexed local installation of pubmed (or other similar repository). Here `M_0` is a large number, typically `100`, but I think we can increase a little bit.
 
 This retrieval step has some tuning that we can do. For example, I think that merely using a bag-of-words approach is not the best approach.
 
@@ -53,6 +53,9 @@ Train a transformer to detect whether a question and sentence are related. We us
 
 **Commands**:
 ```bash
+# Get the BioASQ synergy and Task 9B data, in particular the BioASQ Synergy
+# feedback files.
+
 python src/sentence_classification/negative_sample.py
 
 BLA BLA BLA
@@ -96,3 +99,65 @@ Use Margarida's code to find exact answers to the questions
 
 **Requirements**:
 - [ ] Margarida's code and checkpoints
+
+
+
+
+
+
+
+
+
+
+
+
+## System descriptions
+
+System 1
+
+- Use galago to retrieve documents
+  - all useful tokens in a single #combine(...) bag
+- Split documents into sentences
+- Classify the relevance of each sentence to the question
+- Sentence score = classification of previous step
+- Choose documents based on the 10 highest scoring snippets
+- Answer with Margarida's non-fine tuned code
+
+
+System 2
+
+- Use galago to retrieve documents
+  - noun chunks in #sdm(...) constructs
+  - other non-chunked tokens
+  - all nested in a single #combine(...) bag
+- Split documents into sentences
+- Classify the relevance of each sentence to the question
+- Sentence score = classification of previous step
+- Choose documents based on the 10 highest scoring snippets
+- Answer with Margarida's non-fine tuned code
+
+
+System 3
+
+- Use galago to retrieve documents
+  - noun chunks in #sdm(...) constructs
+  - other non-chunked tokens
+  - all nested in a single #combine(...) bag
+- Split documents into sentences
+- Classify the relevance of each sentence to the question
+- Sentence score = classification of previous step * galago score
+- Choose documents based on the 10 highest scoring snippets
+- Answer with Margarida's non-fine tuned code
+
+
+System 4
+
+- Use galago to retrieve documents (Use dirichlet score)
+  - noun chunks in #sdm(...) constructs
+  - other non-chunked tokens
+  - all nested in a single #combine(...) bag
+- Split documents into sentences
+- Classify the relevance of each sentence to the question
+- Sentence score = classification of previous step * exp(galago score)
+- Choose documents based on the 10 highest scoring snippets
+- Answer with Margarida's non-fine tuned code
