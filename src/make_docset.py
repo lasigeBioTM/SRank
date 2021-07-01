@@ -124,7 +124,7 @@ def get_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        'cord_metadata', metavar='CORD_METADATA',
+        'metadata', metavar='METADATA',
         help='The `metadata.csv` file describing title and abstract of the '
              'CORD dataset.'
     )
@@ -172,7 +172,7 @@ def main() -> None:
     # The following function creates a global metadata variable that is used by
     # other part of the script. This is the easiest way I could envision
     # to make the script work with multiprocessing elements
-    get_metadata(args.cord_metadata)
+    get_metadata(args.metadata)
 
     docset = get_docset(document_ids, args.multiprocess)
 

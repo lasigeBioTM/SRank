@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import io
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ import typing
 from collections import defaultdict
 
 import spacy
+from tqdm.auto import tqdm
 
 
 class Question(typing.TypedDict):
@@ -70,10 +72,7 @@ class Retriever:
             'caseFold': True,
             'index': self.index,
             'requested': self.requested,
-            'queries': [
-                self.format_question(question)
-                for question in questions
-            ]
+            'queries': self.format_questions(questions)
         }
 
         if self.scorer is not None:
@@ -81,6 +80,14 @@ class Retriever:
 
         with open(query_filename, 'w') as f:
             json.dump(config, f)
+
+    def format_questions(self, questions: list[Question]) -> list[GalagoItem]:
+        print('Formatting questions')
+
+        return [
+            self.format_question(question)
+            for question in tqdm(questions)
+        ]
 
     def run_galago(self, query_filename: str) -> str:
         galago_process = subprocess.Popen(
@@ -90,12 +97,39 @@ class Retriever:
                 query_filename,
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.DEVNULL,
+            encoding='utf8'
         )
 
-        result, _ = galago_process.communicate()
+        # We let it run for 1 minute. Once this timeout expires, we go with what
+        # we have. In reallity, we should run with the `--verbose` flag and
+        # monitor the stderr for signs that the process has stalled. If the log
+        # repeatedly shouts
+        #
+        #   > INFO: Still running... X to go.
+        #
+        # where the X does not change, then we know that we will probably not
+        # get any more results. However, at the moment, I'm not seeing how to do
+        # this. If I ever learn how to better handle this situtation, I may come
+        # back here and code the right behaviour. For now let's hope we never
+        # have enough questions to make galago need more than 1 minute to run.
 
-        return result.decode('utf8')
+        try:
+            stdout, _ = galago_process.communicate(timeout=60) # 1 minute
+        except subprocess.TimeoutExpired:
+            galago_process.kill()
+
+            stdout, _ = galago_process.communicate()
+
+        return stdout
+
+
+class LastLineReader():
+    def __init__(self, text: bool = True):
+        self.last_line = '' if text else b''
+
+    def write(self, content: str | bytes) -> int:
+        return 0
 
 
 def process_galago_output(galago_output: str) -> dict[str, dict[str, DocScore]]:
@@ -316,7 +350,7 @@ def main() -> None:
     # `Any`.
     output: list[typing.Any] = [{
         **question,
-        'documents': galago_results.get(question['id']),
+        'documents': galago_results.get(question['id'], {}),
     } for question in questions]
 
     if args.output:
