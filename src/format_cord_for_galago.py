@@ -1,19 +1,20 @@
 import argparse
 import os
 import textwrap
+import typing
 
 import pandas as pd
 from tqdm.auto import tqdm
 
 
-def format_paper(paper):
-    title = paper['title']
-    abstract = paper['abstract']
+def format_paper(paper: pd.Series) -> str:
+    title: str = paper['title']
+    abstract: str = paper['abstract']
 
     return title + '\n' + abstract
 
 
-def get_arguments():
+def get_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Format title and abstract of the CORD 19 papers '
                     'and save them in a destination directory in text format'
@@ -32,8 +33,8 @@ def get_arguments():
     return parser.parse_args()
 
 
-def read_metadata(filename):
-    metadata = pd.read_csv(filename, low_memory=False)
+def read_metadata(filename: str) -> pd.DataFrame:
+    metadata: pd.DataFrame = pd.read_csv(filename, low_memory=False)
 
     # We want only papers with title, abstract and pubmed_id
     metadata = metadata[
@@ -45,7 +46,7 @@ def read_metadata(filename):
     return metadata
 
 
-def main():
+def main() -> None:
     args = get_arguments()
 
     os.makedirs(args.destination)
@@ -53,7 +54,7 @@ def main():
     metadata = read_metadata(args.metadata)
 
     for _, paper in tqdm(metadata.iterrows(), total=len(metadata)):
-        uid = paper['cord_uid']
+        uid: str = paper['cord_uid']
 
         subdir_path = os.path.join(args.destination, uid[0], uid[1])
 

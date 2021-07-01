@@ -92,8 +92,8 @@ class PositiveQuestionSnippetPair(typing.TypedDict):
 
 
 class NegativeQuestionSnippetPair(typing.TypedDict):
-    question_body: str
-    snippet: str
+    question: str
+    sentence: str
 
 
 def partition_pairs(
@@ -113,8 +113,8 @@ def partition_pairs(
                 })
             else:
                 negative_pairs.append({
-                    'question_body': question['body'],
-                    'snippet': snippet['text'],
+                    'question': question['body'],
+                    'sentence': snippet['text'],
                 })
 
     return positive_pairs, negative_pairs
@@ -214,8 +214,8 @@ def main() -> None:
                     break
 
             negative_pairs.append({
-                'question_body': pair['question_body'],
-                'snippet': random_snippet['text'],
+                'question': pair['question_body'],
+                'sentence': random_snippet['text'],
             })
 
     if args.output:

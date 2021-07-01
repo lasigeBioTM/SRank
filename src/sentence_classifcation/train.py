@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import torch
-import transformers  # type: ignore
+import transformers
 from tqdm.auto import tqdm  # type: ignore
 from transformers import (
     AutoModelForSequenceClassification,

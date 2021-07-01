@@ -1,16 +1,22 @@
 import argparse
 import json
 import sys
+import typing
 
 
-def format_questions(questions):
+class SimpleQuestion(typing.TypedDict):
+    id: str
+    body: str
+
+
+def format_questions(questions: list[typing.Any]) -> list[SimpleQuestion]:
     return [{
         'id': question['id'],
         'body': question['body'],
     } for question in questions]
 
 
-def get_arguments():
+def get_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Simplifies the BioASQ format to a key/value JSON file '
                     'containing all question in the input'
@@ -29,11 +35,11 @@ def get_arguments():
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = get_arguments()
 
     with open(args.input) as f:
-        questions = json.load(f)['questions']
+        questions: list[typing.Any] = json.load(f)['questions']
 
     output = format_questions(questions)
 
