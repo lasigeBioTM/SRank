@@ -1,19 +1,42 @@
 from __future__ import annotations
 
+import argparse
 import json
+import random
+import typing
 
 import torch
-import transformers
-from tqdm.auto import tqdm  # type: ignore
-from transformers import (
+from tqdm.auto import tqdm
+from transformers import (  # type: ignore
     AutoModelForSequenceClassification,
     AutoTokenizer,
+    BertTokenizer,
+    PreTrainedTokenizer,
     Trainer,
+    TrainingArguments,
     set_seed,
 )
 
 
-def tokenize(tokenizer, question, sentence, label):
+class Tokens(typing.TypedDict):
+    input_ids: torch.Tensor
+    token_type_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    labels: torch.Tensor
+
+
+class QuestionSentencePair(typing.TypedDict):
+    question: str
+    sentence: str
+    label: str
+
+
+def tokenize(
+    tokenizer: PreTrainedTokenizer,
+    question: str,
+    sentence: str,
+    label: int
+) -> Tokens:
     tokens = tokenizer(
         question,
         sentence,
@@ -27,117 +50,99 @@ def tokenize(tokenizer, question, sentence, label):
         'input_ids': tokens['input_ids'].squeeze(),
         'token_type_ids': tokens['token_type_ids'].squeeze(),
         'attention_mask': tokens['attention_mask'].squeeze(),
-        'labels': torch.FloatTensor([label]),
+        'labels': torch.FloatTensor([label]),  # type: ignore
     }
 
 
-class Dataset(torch.utils.data.Dataset):
+class Dataset(torch.utils.data.Dataset[Tokens]):
     def __init__(
         self,
-        tokenizer: transformers.BertTokenizer,
-        positive_pairs: tuple[str, str],
-        negative_pairs: tuple[str, str]
+        tokenizer: BertTokenizer,
+        data: list[QuestionSentencePair]
     ) -> None:
         self.tokenizer = tokenizer
+        self.data = data
 
-        self.data = [
-            (question, sentence, 1)
-            for question, sentence in positive_pairs
-        ] + [
-            (question, sentence, 0)
-            for question, sentence in negative_pairs
-        ]
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, idx: int):
-        return tokenize(self.tokenizer, *self.data[idx])
+    def __getitem__(self, idx: int) -> Tokens:
+        instance = self.data[idx]
+
+        return tokenize(
+            self.tokenizer,
+            question=instance['question'],
+            sentence=instance['sentence'],
+            label=1 if instance['label'] == 'positive' else 0,
+        )
 
 
-def read_json(filename):
-    with open(filename) as f:
-        return json.load(f)
+def get_arguments() -> argparse.Namespace:
+    args = argparse.Namespace()
+
+    args.transformer_model = 'dmis-lab/biobert-base-cased-v1.1'
+    args.input = 'results/qs-train-dataset.json'
+    args.seed = 42
+    args.epochs = 2
+    args.train_ratio = 0.9
+
+    return args
 
 
-tokenizer = AutoTokenizer.from_pretrained(
-    'dmis-lab/biobert-base-cased-v1.1',
-    do_lower_case=False,
-)
-model = AutoModelForSequenceClassification.from_pretrained(
-    'dmis-lab/biobert-base-cased-v1.1',
-    num_labels=1,
-)
+def main() -> None:
+    args = get_arguments()
 
-DIR = 'data/'
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.transformer_model,
+        do_lower_case=False,
+    )
 
-positive_train = read_json(DIR + 'question-sentence-positive-pairs.train.json')
-positive_test = read_json(DIR + 'question-sentence-positive-pairs.test.json')
-total_positive = len(positive_train) + len(positive_test)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.transformer_model,
+        num_labels=1,
+    )
 
-negative_instances = read_json(DIR + 'question-sentence-negative-pairs.json')
+    with open(args.input) as f:
+        data = json.load(f)
 
-negative_train_size = int(len(positive_train) / total_positive * len(negative_instances))
+    training_size = int(args.train_ratio * len(data))
 
-negative_train = negative_instances[:negative_train_size]
-negative_test = negative_instances[negative_train_size:]
+    rand = random.Random(args.seed)
+    rand.shuffle(data)
 
-print(f'{len(positive_train)} positive training samples')
-print(f'{len(negative_train)} negative training samples')
+    train_dataset = Dataset(tokenizer, data[:training_size])
+    test_dataset = Dataset(tokenizer, data[training_size:])
 
-print(f'{len(positive_test)} positive testing samples')
-print(f'{len(negative_test)} negative testing samples')
+    training_args = TrainingArguments(
+        output_dir='models/qs-model/',
+        overwrite_output_dir=True,
+        do_train=True,
+        do_eval=True,
+        evaluation_strategy='steps',
+        eval_steps=200,
+        per_device_train_batch_size=6,  # TODO: These may change
+        per_device_eval_batch_size=6,  # TODO: These may change
+        learning_rate=5e-05,
+        num_train_epochs=args.epochs,
+        logging_strategy='steps',
+        logging_steps=20,
+        save_strategy='steps',
+        save_steps=1000,
+        seed=args.seed,
+        fp16=True,
+    )
 
-import random
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
+    )
 
-random.seed(42)
+    trainer.train()
 
-random.shuffle(negative_train)
-random.shuffle(positive_test)
-random.shuffle(negative_test)
+    trainer.save_model()
 
-def sample(l, ratio):
-    random.shuffle(positive_train)
 
-    return l[:int(ratio * len(l))]
-
-positive_train_sample = sample(positive_train, 0.4)
-negative_train_sample = sample(negative_train, 0.4)
-
-positive_test_sample = sample(positive_test, 0.1)
-negative_test_sample = sample(negative_test, 0.1)
-
-train_dataset = Dataset(tokenizer, positive_train_sample, negative_train_sample)
-test_dataset = Dataset(tokenizer, positive_test_sample, negative_test_sample)
-
-training_args = transformers.TrainingArguments(
-    output_dir='models/qs-model/',
-    overwrite_output_dir=True,
-    do_train=True,
-    do_eval=True,
-    evaluation_strategy='steps',
-    eval_steps=200,
-    per_device_train_batch_size=6,  # TODO: These may change
-    per_device_eval_batch_size=6,  # TODO: These may change
-    learning_rate=5e-05,
-    num_train_epochs=6,
-    logging_strategy='steps',
-    logging_steps=20,
-    save_strategy='steps',
-    save_steps=1000,
-    seed=42,
-    fp16=True,
-)
-
-set_seed(training_args.seed)
-
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=test_dataset,
-)
-
-trainer.train()
-
-trainer.save_model()
+if __name__ == '__main__':
+    main()
