@@ -3,14 +3,22 @@ import json
 import math
 import operator
 import sys
+import typing
 from collections import defaultdict
 
 
-def load_questions(filename):
-    print('Loading questions model ...')
+class Question(typing.TypedDict):
+    id: str
+    snippets: list[Snippet]
+    documents: list[Document]
 
-    with open(filename) as f:
-        return json.load(f)
+
+class Snippet(typing.TypedDict):
+    document: str
+
+
+class Sentence(typing.TypedDict):
+    snippet: None
 
 
 def load_galago_results(filename):
@@ -74,10 +82,10 @@ def multiply_doc_score(galago_results, sentences_per_query, EXPONENTIATE):
             sentence['score'] *= doc_score
 
 
-def get_most_relevant(sentences_per_query, keep=10):
+def get_most_relevant(sentences_per_query: dict[str, list[Sentence]], keep: int = 10) -> dict[str, Question]:
     print('Sorting snippets by score ...')
 
-    result = {}
+    result: dict[str, Question] = {}
 
     for query_id, sentences in sentences_per_query.items():
         # Sort snippets from most to least relevant
@@ -105,20 +113,20 @@ def get_most_relevant(sentences_per_query, keep=10):
     return result
 
 
-def get_unique_documents(snippets):
+def get_unique_documents(snippets: list[Snippet]) -> list[str]:
     # This cannot be simply a set because we want to guarantee the order of the
     # documents
 
     result = []
 
-    for snippets in snippets:
-        if snippets['document'] not in result:
-            result.append(snippets['document'])
+    for snippet in snippets:
+        if snippet['document'] not in result:
+            result.append(snippet['document'])
 
     return result
 
 
-def update_bioasq_questions(questions, relevant_snippets_and_documents):
+def update_bioasq_questions(questions: list[Question], relevant_snippets_and_documents: dict) -> None:
     for question in questions:
         relevant = relevant_snippets_and_documents.get(question['id'])
 
@@ -130,7 +138,7 @@ def update_bioasq_questions(questions, relevant_snippets_and_documents):
             question['snippets'] = []
 
 
-def get_arguments():
+def get_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Choose the top 10 snippets for each question and create a '
                     'BioASQ-format output containing snippets and documents '
@@ -177,7 +185,7 @@ def get_arguments():
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = get_arguments()
 
     sentences_per_query = group_sentences_per_query(
@@ -188,14 +196,20 @@ def main():
         galago_results = load_galago_results(args.galago_results)
 
         multiply_doc_score(
-            galago_results, sentences_per_query, args.exponentiate)
+            galago_results,
+            sentences_per_query,
+            args.exponentiate
+        )
 
     relevant_snippets_and_documents = get_most_relevant(sentences_per_query)
 
-    output = load_questions(args.questions)
+    with open(args.questions) as f:
+        output = json.load(f)
 
-    update_bioasq_questions(output['questions'],
-                            relevant_snippets_and_documents)
+    update_bioasq_questions(
+        output['questions'],
+        relevant_snippets_and_documents
+    )
 
     if args.output:
         with open(args.output, 'w') as f:

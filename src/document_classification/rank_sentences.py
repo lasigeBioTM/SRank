@@ -1,26 +1,35 @@
 import argparse
 import json
 import math
+import typing
 
-import torch
-import transformers
 import spacy
+import torch
+import transformers  # type: ignore
 from tqdm.auto import tqdm
+
+
+T = typing.TypeVar('T')
+
+
+class Tokens(typing.TypedDict):
+    input_ids: torch.Tensor
+    token_type_ids: torch.Tensor
+    attention_mask: torch.Tensor
 
 
 class Ranker:
     def __init__(
         self,
-        tokenizer,
-        model,
-        device,
+        tokenizer: transformers.PreTrainedTokenizer,
+        model: transformers.BertModel,
+        device: str,
     ):
         self.tokenizer = tokenizer
         self.model = model
         self.device = device
 
-
-    def find_batch_size(self):
+    def find_batch_size(self) -> int:
         # Sensible default values to start the search
         bottom = 0
         top = 100
@@ -44,9 +53,8 @@ class Ranker:
 
         return bottom
 
-
-    @torch.no_grad()
-    def batch_size_works(self, batch_size: int):
+    @torch.no_grad()  # type: ignore
+    def batch_size_works(self, batch_size: int) -> bool:
         print(f'  trying {batch_size} ...', end='')
 
         try:
@@ -61,8 +69,7 @@ class Ranker:
             print(' works ✔')
             return True
 
-
-    def tokenize(self, question, sentence):
+    def tokenize(self, question: list[str], sentence: list[str]) -> Tokens:
         tokens = self.tokenizer(
             question,
             sentence,
@@ -78,16 +85,18 @@ class Ranker:
             'attention_mask': tokens['attention_mask'].to(self.device),
         }
 
-    @torch.no_grad()
-    def score_question_snippet_pair(self, question, snippet_text):
-        return self.model(**self.tokenize(question, snippet_text)).logits.flatten().tolist()
+    @torch.no_grad()  # type: ignore
+    def score_question_snippet_pair(self, question: list[str], snippet_text: list[str]) -> list[float]:
+        output = self.model(**self.tokenize(question, snippet_text))
+
+        return output.logits.flatten().tolist()  # type: ignore
 
 
 class TokenCounter:
-    def __init__(self, nlp):
+    def __init__(self, nlp: spacy.language.Language):
         self.nlp = nlp
 
-    def count_tokens(self, text):
+    def count_tokens(self, text: str) -> int:
         doc = self.nlp(text, disable=[
             'tagger',
             'parser',
@@ -98,9 +107,8 @@ class TokenCounter:
 
         return sum(1 for token in doc if not self.ignore_token(token))
 
-
-    def ignore_token(self, token):
-        return (
+    def ignore_token(self, token: spacy.tokens.Token) -> bool:
+        return (  # type: ignore
             token.is_bracket or
             token.is_currency or
             token.is_left_punct or
@@ -110,19 +118,18 @@ class TokenCounter:
             token.is_stop
         )
 
-
-    def count_chars(self, text):
+    def count_chars(self, text: str) -> int:
         return len(text)
 
 
-def chunker(sequence, chunk_size):
+def chunker(sequence: list[T], chunk_size: int) -> typing.Generator[list[T], None, None]:
     return (
         sequence[pos:pos + chunk_size]
         for pos in range(0, len(sequence), chunk_size)
     )
 
 
-def get_arguments():
+def get_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Rank the sentences retrieved for a given question based '
                     'on how well they contain the answer to that question. '
@@ -208,7 +215,7 @@ def get_arguments():
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = get_arguments()
 
     print('Loading tokenizer ...')
