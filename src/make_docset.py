@@ -18,7 +18,6 @@ if typing.TYPE_CHECKING:
 class DocDetails(typing.TypedDict):
     title: str
     abstract: str
-    publish_time: str
 
 
 class Snippet(typing.TypedDict):
@@ -28,6 +27,7 @@ class Snippet(typing.TypedDict):
     beginSection: str
     endSection: str
     document: str
+    tokens: list[str]
 
 
 def get_metadata(filename: str) -> None:
@@ -41,16 +41,26 @@ def get_metadata(filename: str) -> None:
         pd.notna(metadata['pubmed_id'])
     ]
 
-    metadata = metadata[['cord_uid', 'title', 'abstract', 'publish_time']]
+    metadata = metadata[['cord_uid', 'title', 'abstract']]
 
     metadata = metadata.drop_duplicates('cord_uid').set_index('cord_uid')
 
 
-def get_docset(document_ids: list[str], use_mp: bool) -> dict[str, DocDetails]:
+def get_nlp(model: str) -> None:
+    global nlp
+
+    nlp = spacy.load(model, exclude=[
+        'ner',
+        'attribute_ruler',
+        'lemmatizer',
+    ])
+
+
+def get_docset(document_ids: list[str], cores: int) -> dict[str, DocDetails]:
     result: dict[str, DocDetails] = {}
 
-    if use_mp:
-        with mp.Pool(processes=20) as pool:
+    if cores != 1:
+        with mp.Pool(processes=cores if cores > 0 else None) as pool:
             doc_objects = pool.map(get_doc_text, document_ids)
 
             for i, doc in enumerate(doc_objects):
@@ -67,8 +77,6 @@ def get_docset(document_ids: list[str], use_mp: bool) -> dict[str, DocDetails]:
 
 
 def get_doc_text(doc_id: str) -> DocDetails | None:
-    global metadata
-
     try:
         row = dict(metadata.loc[doc_id])
     except KeyError:
@@ -77,11 +85,10 @@ def get_doc_text(doc_id: str) -> DocDetails | None:
     return {
         'title': row['title'],
         'abstract': row['abstract'],
-        'publish_time': row['publish_time'],
     }
 
 
-def split_section(doc_id: str, text: str, section: str, nlp: Language) -> list[Snippet]:
+def split_section(doc_id: str, text: str, section: str) -> list[Snippet]:
     return [
         {
             'offsetInBeginSection': sentence.start_char,
@@ -89,24 +96,66 @@ def split_section(doc_id: str, text: str, section: str, nlp: Language) -> list[S
             'text': sentence.text,
             'beginSection': section,
             'endSection': section,
-            'document': doc_id
+            'document': doc_id,
+            'tokens': get_useful_tokens(sentence),
         }
         for sentence in nlp(text).sents
     ]
 
 
-def split_into_snippets(doc_id: str, document: DocDetails, nlp: Language) -> list[Snippet]:
-    return (
-        split_section(doc_id, document['title'], 'title', nlp) +
-        split_section(doc_id, document['abstract'], 'abstract', nlp)
+def get_useful_tokens(sentence: typing.Any) -> list[str]:
+    # TODO: spacy does not provide very good type hints. For now, assume we get
+    # "Any" and later we can try to better document this function
+
+    return [
+        token.text
+        for token in sentence
+        if useful_token(token)
+    ]
+
+
+def useful_token(token: typing.Any) -> bool:
+    # type: ignore
+    return not (
+        token.is_bracket or
+        token.is_currency or
+        token.is_left_punct or
+        token.is_right_punct or
+        token.is_punct or
+        token.is_space or
+        token.is_stop
     )
 
 
-def split_docset_into_sentences(docset: dict[str, DocDetails], nlp: Language) -> dict[str, list[Snippet]]:
-    return {
-        paper_id: split_into_snippets(paper_id, paper, nlp)
-        for paper_id, paper in tqdm(docset.items())
-    }
+def split_into_snippets(doc_id: str, document: DocDetails) -> list[Snippet]:
+    return (
+        split_section(doc_id, document['title'], 'title') +
+        split_section(doc_id, document['abstract'], 'abstract')
+    )
+
+
+def split_into_snippets_star(item: tuple[str, DocDetails]) -> list[Snippet]:
+    return split_into_snippets(*item)
+
+
+def split_docset_into_sentences(docset: dict[str, DocDetails], cores: int) -> dict[str, list[Snippet]]:
+    if cores == 1:
+        return {
+            paper_id: split_into_snippets(paper_id, paper)
+            for paper_id, paper in tqdm(docset.items())
+        }
+
+    result: dict[str, list[Snippet]] = {}
+
+    papers = list(docset.items())
+
+    with mp.Pool(processes=cores if cores > 0 else None) as pool:
+        partial = pool.imap(split_into_snippets_star, papers)
+
+        for i, snippets in enumerate(tqdm(partial, total=len(papers))):
+            result[papers[i][0]] = snippets
+
+    return result
 
 
 def get_arguments() -> argparse.Namespace:
@@ -130,9 +179,11 @@ def get_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        '-m', '--multiprocess', action='store_true',
-        help='Whether to use multiprocessing. This speeds up the process by '
-             'using multiple cores of the machine.'
+        '-c', '--cores', type=int, default=1,
+        help='How many cores to use in this process. By default, only one is '
+             'used. Higher numbers speed up the process by making the script '
+             'use multiple cores of the machine. A value of 0 makes the script '
+             'use all cores of the machine.'
     )
 
     parser.add_argument(
@@ -157,26 +208,21 @@ def main() -> None:
     with open(args.retrieved) as f:
         galago_results = json.load(f)
 
-    nlp = spacy.load(args.nlp_model, exclude=[
-        'ner',
-        'attribute_ruler',
-        'lemmatizer',
-    ])
-
     document_ids = list({
         doc_id
         for question in galago_results
         for doc_id in question['documents']
     })
 
-    # The following function creates a global metadata variable that is used by
-    # other part of the script. This is the easiest way I could envision
-    # to make the script work with multiprocessing elements
+    # The following functions create the global `metadata` and `nlp` variables,
+    # used by other parts of the script. This is the easiest way I could
+    # envision to make the script work with multiprocessing elements
     get_metadata(args.metadata)
+    get_nlp(args.nlp_model)
 
-    docset = get_docset(document_ids, args.multiprocess)
+    docset = get_docset(document_ids, args.cores)
 
-    output = split_docset_into_sentences(docset, nlp)
+    output = split_docset_into_sentences(docset, args.cores)
 
     if args.output:
         with open(args.output, 'w') as f:
@@ -188,5 +234,6 @@ def main() -> None:
 if __name__ == '__main__':
     # Global type hint
     metadata: pd.DataFrame
+    nlp: spacy.language.Language
 
     main()

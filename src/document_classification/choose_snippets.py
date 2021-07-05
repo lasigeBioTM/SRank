@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import math
@@ -7,60 +9,94 @@ import typing
 from collections import defaultdict
 
 
+class QuestionSentencePair(typing.TypedDict):
+    question_id: str
+    question: str
+    snippet: Snippet
+    score: float
+
+
 class Question(typing.TypedDict):
-    id: str
     snippets: list[Snippet]
-    documents: list[Document]
+    documents: list[str]
 
 
 class Snippet(typing.TypedDict):
+    text: str
     document: str
 
 
-class Sentence(typing.TypedDict):
-    snippet: None
+class ScoredSnippet(typing.TypedDict):
+    snippet: Snippet
+    score: float
 
 
-def load_galago_results(filename):
+# class Sentence(typing.TypedDict):
+#     snippet: None
+
+
+class GalagoItem(typing.TypedDict):
+    answerReady: bool
+    id: str
+    type: str
+    body: str
+    documents: dict[str, Document]
+
+
+class Document(typing.TypedDict):
+    rank: int
+    score: float
+
+
+def load_galago_results(filename: str) -> dict[str, dict[str, float]]:
     print('Loading galago results ...')
 
     with open(filename) as f:
-        raw = json.load(f)['queries']
+        raw: list[GalagoItem] = json.load(f)
 
-    results = {}
+    results: dict[str, dict[str, float]] = {}
 
-    for query in raw:
-        query_id = query['query_id']
+    for raw_item in raw:
+        question_id = raw_item['id']
 
-        results[query_id] = {}
+        results[question_id] = {}
 
-        for document in query.get('retrieved_documents', []):
-            doc_id = document['doc_id']
-            galago_score = document['galago_score']
-
-            results[query_id][doc_id] = galago_score
+        for document_id, document in raw_item.get('documents', {}).items():
+            results[question_id][document_id] = document['score']
 
     return results
 
 
-def load_all_sentences(filename):
+def load_all_qs_pairs(filename: str) -> list[QuestionSentencePair]:
     print('Loading split sentences ...')
 
     with open(filename) as f:
         return [
-            sentence
+            process_qs_pair(pair)
             for line in f
-            for sentence in json.loads(line)
+            for pair in json.loads(line)
         ]
 
 
-def group_sentences_per_query(all_sentences):
-    print('Grouping sentences by query id ...')
+def process_qs_pair(pair: QuestionSentencePair) -> QuestionSentencePair:
+    # We need to remove the list of tokens of the snippet, because they are not
+    # needed in this script and would not be accepted by BioASQ later on the
+    # pipeline.
 
-    result = defaultdict(list)
+    del pair['snippet']['tokens']  # type: ignore
+
+    return pair
+
+
+def group_sentences_per_question(
+    all_sentences: list[QuestionSentencePair]
+) -> dict[str, list[ScoredSnippet]]:
+    print('Grouping sentences by question id ...')
+
+    result: dict[str, list[ScoredSnippet]] = defaultdict(list)
 
     for sentence in all_sentences:
-        result[sentence['query_id']].append({
+        result[sentence['question_id']].append({
             'snippet': sentence['snippet'],
             'score': sentence['score'],
         })
@@ -68,26 +104,33 @@ def group_sentences_per_query(all_sentences):
     return result
 
 
-def multiply_doc_score(galago_results, sentences_per_query, EXPONENTIATE):
+def multiply_doc_score(
+    galago_results: dict[str, dict[str, float]],
+    sentences_per_question: dict[str, list[ScoredSnippet]],
+    exponentiate: bool,
+) -> None:
     print('Weighting each score by multiplying with the document score ...')
 
-    for query_id, sentences in sentences_per_query.items():
+    for question_id, sentences in sentences_per_question.items():
         for sentence in sentences:
             doc_id = sentence['snippet']['document']
-            doc_score = galago_results[query_id][doc_id]
+            doc_score = galago_results[question_id][doc_id]
 
-            if EXPONENTIATE:
+            if exponentiate:
                 doc_score = math.exp(doc_score)
 
             sentence['score'] *= doc_score
 
 
-def get_most_relevant(sentences_per_query: dict[str, list[Sentence]], keep: int = 10) -> dict[str, Question]:
+def get_most_relevant(
+    sentences_per_question: dict[str, list[ScoredSnippet]],
+    keep: int = 10
+) -> dict[str, Question]:
     print('Sorting snippets by score ...')
 
     result: dict[str, Question] = {}
 
-    for query_id, sentences in sentences_per_query.items():
+    for question_id, sentences in sentences_per_question.items():
         # Sort snippets from most to least relevant
         sentences.sort(
             key=operator.itemgetter('score'),
@@ -105,7 +148,7 @@ def get_most_relevant(sentences_per_query: dict[str, list[Sentence]], keep: int 
         documents = get_unique_documents(snippets)
 
         # Update the data structure with the selected snippets and documents
-        result[query_id] = {
+        result[question_id] = {
             'snippets': snippets,
             'documents': documents,
         }
@@ -126,7 +169,10 @@ def get_unique_documents(snippets: list[Snippet]) -> list[str]:
     return result
 
 
-def update_bioasq_questions(questions: list[Question], relevant_snippets_and_documents: dict) -> None:
+def update_bioasq_questions(
+    questions: list[typing.Any],
+    relevant_snippets_and_documents: dict[str, Question]
+) -> None:
     for question in questions:
         relevant = relevant_snippets_and_documents.get(question['id'])
 
@@ -158,16 +204,16 @@ def get_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '-m', '--multiply-document', action='store_true',
+        help='Whether to multiply the score of a sentence with the galago '
+             'score of the corresponding document.'
+    )
+
+    parser.add_argument(
         '-g', '--galago-results',
         help='The file containing the galago results for each question. This '
              'is only needed if you want to multiply the scores of each '
              'sentence by the score of the corresponding document.'
-    )
-
-    parser.add_argument(
-        '-m', '--multiply-document', action='store_true',
-        help='Whether to multiply the score of a sentence with the galago '
-             'score of the corresponding document.'
     )
 
     parser.add_argument(
@@ -188,8 +234,8 @@ def get_arguments() -> argparse.Namespace:
 def main() -> None:
     args = get_arguments()
 
-    sentences_per_query = group_sentences_per_query(
-        load_all_sentences(args.sentences)
+    sentences_per_question = group_sentences_per_question(
+        load_all_qs_pairs(args.sentences)
     )
 
     if args.multiply_document:
@@ -197,14 +243,14 @@ def main() -> None:
 
         multiply_doc_score(
             galago_results,
-            sentences_per_query,
+            sentences_per_question,
             args.exponentiate
         )
 
-    relevant_snippets_and_documents = get_most_relevant(sentences_per_query)
+    relevant_snippets_and_documents = get_most_relevant(sentences_per_question)
 
     with open(args.questions) as f:
-        output = json.load(f)
+        output: typing.Any = json.load(f)
 
     update_bioasq_questions(
         output['questions'],

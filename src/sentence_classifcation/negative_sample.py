@@ -42,8 +42,7 @@ def get_arguments() -> argparse.Namespace:
              'list of relevant documents for each question. Snippets in this '
              'file are considered positive instances, unless they are marked '
              'with the `"golden": false` property. Non-golden snippets are '
-             'used as negative instances (see the `--sample` and `--ratio` '
-             'flags).'
+             'used as negative instances (see the ratio` flag).'
     )
 
     parser.add_argument(

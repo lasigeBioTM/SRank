@@ -3,7 +3,6 @@ import json
 import math
 import typing
 
-import spacy
 import torch
 import transformers  # type: ignore
 from tqdm.auto import tqdm
@@ -16,6 +15,22 @@ class Tokens(typing.TypedDict):
     input_ids: torch.Tensor
     token_type_ids: torch.Tensor
     attention_mask: torch.Tensor
+
+
+class Document(typing.TypedDict):
+    rank: int
+    score: float
+
+
+class GalagoItem(typing.TypedDict):
+    id: str
+    body: str
+    documents: dict[str, Document]
+
+
+class Snippet(typing.TypedDict):
+    text: str
+    tokens: list[str]
 
 
 class Ranker:
@@ -92,36 +107,6 @@ class Ranker:
         return output.logits.flatten().tolist()  # type: ignore
 
 
-class TokenCounter:
-    def __init__(self, nlp: spacy.language.Language):
-        self.nlp = nlp
-
-    def count_tokens(self, text: str) -> int:
-        doc = self.nlp(text, disable=[
-            'tagger',
-            'parser',
-            'ner',
-            'attribute_ruler',
-            'lemmatizer',
-        ])
-
-        return sum(1 for token in doc if not self.ignore_token(token))
-
-    def ignore_token(self, token: spacy.tokens.Token) -> bool:
-        return (  # type: ignore
-            token.is_bracket or
-            token.is_currency or
-            token.is_left_punct or
-            token.is_right_punct or
-            token.is_punct or
-            token.is_space or
-            token.is_stop
-        )
-
-    def count_chars(self, text: str) -> int:
-        return len(text)
-
-
 def chunker(sequence: list[T], chunk_size: int) -> typing.Generator[list[T], None, None]:
     return (
         sequence[pos:pos + chunk_size]
@@ -195,12 +180,6 @@ def get_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        '-n', '--nlp-model', default='en_core_web_lg',
-        help='The spacy model to use for filtering sentences based on token '
-             'count. Defaults to "en_core_web_lg".'
-    )
-
-    parser.add_argument(
         '-T', '--min-token-length', type=int, default=8,
         help='The minimum size of a sentence, measured in tokens, to be ranked. '
              'Defaults to 8.'
@@ -232,33 +211,22 @@ def main() -> None:
 
     ranker = Ranker(tokenizer, model, args.device)
 
-    print('Loading spacy language model ...')
-    nlp = spacy.load(args.nlp_model, exclude=[
-        'tagger',
-        'parser',
-        'ner',
-        'attribute_ruler',
-        'lemmatizer',
-    ])
-
-    token_counter = TokenCounter(nlp)
-
     print('Loading data ...')
     with open(args.retrieved) as f:
-        galago_results = json.load(f)
+        galago_results: list[GalagoItem] = json.load(f)
 
     with open(args.docset) as f:
-        paper_snippets = json.load(f)
+        paper_snippets: dict[str, list[Snippet]] = json.load(f)
 
     print('Pairing questions with paper sentences and filtering small sentences ...')
     question_snippet_pairs = [
         (query, snippet)
-        for query in tqdm(galago_results['queries'])
-        for document in query.get('retrieved_documents', [])
-        for snippet in paper_snippets[document['doc_id']]
+        for query in galago_results
+        for document_id in query.get('documents', {})
+        for snippet in paper_snippets[document_id]
         if (
-            token_counter.count_tokens(snippet['text']) >= args.min_token_length and
-            token_counter.count_chars(snippet['text']) >= args.min_chars_length
+            len(snippet['tokens']) >= args.min_token_length and
+            len(snippet['text']) >= args.min_chars_length
         )
     ]
 
@@ -276,18 +244,22 @@ def main() -> None:
     output_handle = open(args.output, 'w')
 
     for chunk in tqdm(chunks, total=num_chunks):
-        queries, snippets = zip(*chunk)
+        questions: tuple[GalagoItem]
+        snippets: tuple[Snippet]
+
+        questions, snippets = zip(*chunk) # type: ignore
 
         scores = ranker.score_question_snippet_pair(
-            [query['query_text'] for query in queries],
-            [snippet['text'] for snippet in snippets]
+            [question['body'] for question in questions],
+            [snippet['text'] for snippet in snippets],
         )
 
         items = [{
-            'query_id': query['query_id'],
+            'question_id': question['id'],
+            'question': question['body'],
             'snippet': snippet,
             'score': score
-        } for query, snippet, score in zip(queries, snippets, scores)]
+        } for question, snippet, score in zip(questions, snippets, scores)]
 
         output_handle.write(json.dumps(items))
         output_handle.write('\n')

@@ -284,7 +284,7 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument(
         '-c', '--noun-chunk-operator',
         help='If given, this flag describes the galago operator to use to group '
-             'noun chunks in the questions. This is a way of ensuring wighing '
+             'noun chunks in the questions. This is a way of ensuring weighing '
              'in the fact that this words appear sequentially in the question. '
     )
 
@@ -323,7 +323,7 @@ def main() -> None:
     args = get_arguments()
 
     with open(args.questions_filename) as f:
-        questions: list[Question] = json.load(f)
+        questions: list[Question] = json.load(f)['questions']
 
     nlp = spacy.load(args.spacy_model)
 
