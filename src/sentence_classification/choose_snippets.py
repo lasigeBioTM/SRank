@@ -204,6 +204,11 @@ def get_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '-n', '--top', type=int, default=10,
+        help='The top snippets to keep in the final output. Defaults to 10.'
+    )
+
+    parser.add_argument(
         '-m', '--multiply-document', action='store_true',
         help='Whether to multiply the score of a sentence with the galago '
              'score of the corresponding document.'

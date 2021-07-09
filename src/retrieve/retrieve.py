@@ -345,11 +345,9 @@ def main() -> None:
 
     galago_results = retriever.retrieve(questions)
 
-    # Notice that mypy does not really like me to spread the `question` variable
-    # with the doube asterisk operator. That's why I'm hinting this as a list of
-    # `Any`.
-    output: list[typing.Any] = [{
-        **question,
+    output = [{
+        'id': question['id'],
+        'body': question['body'],
         'documents': galago_results.get(question['id'], {}),
     } for question in questions]
 

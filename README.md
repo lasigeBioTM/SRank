@@ -92,101 +92,185 @@ Use [Lasige's BioASQ9B](https://github.com/lasigeBioTM/BioASQ9B) system to find 
 
     You can chose whatever destination directory you want, as long as it does not exist.
 
-1. Edit the `config/galago-build-params.json` parameters so that the `"inputPath"` and `"indecPath"` properties point to where you placed your formatted documents and the place where you want the index to be built. In other words, `"inputPath"` is the directory chosen in the previous step, and `"indexPath"` is the (non-existing) directory where you want to place your index.
+1. Edit the `config/galago-build-params.json` parameters so that the `"inputPath"` and `"indexPath"` properties point to where you placed your formatted documents and the place where you want the index to be built. In other words, `"inputPath"` is the directory chosen in the previous step, and `"indexPath"` is the (non-existing) directory where you want to place your index.
 
 1. Run `bash build_galago_index.sh`. This will take some time, particularly if you have hundreds of thousands of documents, and big documents to index. You should be able to monitor the state of the build in http://localhost:54321.
 
-1. Follow the golden standard links above to get a copy of the BioASQ answers from previous tasks. Place the files in the `data/` directory.
+1. Follow the golden standard links above to get a copy of the BioASQ answers from previous tasks. The Synergy task files come as a ZIP file, which you must unzip. The important files in there are `golden_round_4.json` and `feedback_final.json`. The file for task 9B is named `bioasq-training-9b.json`. Place these three files in the `data/` directory.
 
-1. Download the challenge file, containing the questions you want to answer. Place it in the `data/` directory.
+1. Download the challenge file, containing the questions you want to answer. Save it as `data/testset.json`.
 
-1. Clone the [BioASQ9B system](https://github.com/lasigeBioTM/BioASQ9B/) and consult the README file, and then follow the instructions there to download the model checkpoint files into the appropriate directories.
+1. Clone the [BioASQ9B system](https://github.com/lasigeBioTM/BioASQ9B/) and consult the README file, and then follow the instructions there to download the model checkpoint files into the appropriate directories. The necessary checkpoints are `checkpoint_bio_yn.pt`, `checkpoint_list.pt` and `checkpoint_factoid.pt`.
 
 1. Follow the code below, which will run `SRank`, produce a variety of intermediate files, and culminates in the creation of a file that associated to each question a set of papers and snippets.
 
     Notice that all the python scripts have multiple command line arguments, which you can explore either by reading the source or running `python /path/to/script.py --help`
 
     ```bash
-    python src/
+    # Because the BioASQ Task 9 uses Pubmed IDs to identify documents, the
+    # first step is to convert the training file so that it uses CORD19
+    # identifiers. If you are dealing with a dataset that contains document identifiers from multiple repositories, converting them to the correct format is always going to be the first step.
+
+    python src/repository/to_cord.py \
+      data/bioasq-training-9b.json \
+      /path/to/metadata.csv \
+      --output data/bioasq-training-9b-cord-ids.json
+
+    # Start by running the retrieve step on the training data
+
+    python src/retrieve/retrieve.py \
+      data/feedback_final.json \
+      /path/to/galago-index \
+      --requested 100 \
+      --scorer bm25 \
+      --output results/feedback_final-galago-results.json
+
+    python src/retrieve/retrieve.py \
+      data/bioasq-training-9b.json \
+      /path/to/galago-index \
+      --requested 100 \
+      --scorer bm25 \
+      --output results/bioasq-training-9b-galago-results.json
+
+    # Create a docset (split documents into sentences) for the retrieved
+    # documents. We could, in theory, split all papers, but that would take
+    # a very long time and we only need a few of them anyway. Notice that the
+    # --cores flag lets you select how many cores of your machine to use. Here
+    # we set it to 20 because we had that many cores on our machine.
+
+    python src/retrieve/make_docset.py \
+      results/feedback_final-galago-results.json \
+      /path/to/metadata.csv \
+      --cores 20 \
+      --output results/feedback_final-docset.json
+
+    python src/retrieve/make_docset.py \
+      results/bioasq-training-9b-galago-results.json \
+      /path/to/metadata.csv \
+      --cores 20 \
+      --output results/bioasq-training-9b-docset.json
+
+    # For each of these training sets, let's find unrelated sentences for each
+    # question
+
+    python src/sentence_classification/negative_sample.py \
+      data/golden_round_4.json \
+      results/feedback_final-docset.json \
+      --ratio 1 \
+      --output results/feedback_final-negative-qs-pairs.json
+
+    python src/sentence_classification/negative_sample.py \
+      data/bioasq-training-9b-cord-ids.json \
+      results/bioasq-training-9b-docset.json \
+      --ratio 1 \
+      --output results/bioasq-training-9b-negative-qs-pairs.json
+
+    # Merge all related and unrelated question/sentences pairs into a
+    # single dataset, and then use that to train the QS classification model.
+
+    # Please study the various arguments that you can provide to the `train.py`
+    # script. Use that knowledge to influence the training process. In
+    # particular, you should change the flags:
+    #   --per-device-train-batch-size
+    #   --per-device-eval-batch-size
+    #   --log-steps
+    #   --eval-steps
+    #   --save-steps
+    #   --fp16
+    # in order to tune the training process to your system capabilities.
+    # Also, if necessary, use the CUDA_VISIBLE_DEVICES environment variable
+    # to instruct pytorch to use only a subset of the GPUs of the system.
+
+    python src/sentence_classification/merge_qs.py \
+      --positive \
+        data/feedback_final.json \
+        data/bioasq-training-9b.json \
+      --negative \
+        results/feedback_final-negative-qs-pairs.json \
+        results/bioasq-training-9b-negative-qs-pairs.json \
+      --output results/qs-train-dataset.json
+
+    python src/sentence_classification/train.py \
+      results/qs-train-dataset.json \
+      --output-dir models/qs-model
+
+    # Retrieve the documents for the particular questions in the challenge
+
+    python src/retrieve/retrieve.py \
+      data/testset.json \
+      --requested 100 \
+      --scorer bm25 \
+      --output results/testset-galago-results.json
+
+    python src/retrieve/make_docset.py \
+      results/testset-galago-results.json \
+      /path/to/metadata.csv \
+      --cores 20 \
+      --output results/testset-docset.json
+
+    # Rank the sentences with respect to the question they are answering to.
+    # Since we are using the deep-learning model here, you should also take care
+    # to use the CUDA_VISIBLE_DEVICES environment variable if needed.
+
+    python src/sentence_classification/rank_sentences.py \
+      results/testset-galago-results.json \
+      results/testset-docset.json \
+      --keep-upper-case \
+      --transformer-model models/qs-model \
+      --output results/testset-ranked-sentences.jsonl
+
+    # For each question, choose the 10 highest-ranking snippets
+
+    python src/sentence_classification/choose_snippets.py \
+      data/testset.json \
+      results/testset-ranked-sentences.jsonl \
+      --top 10 \
+      --output results/testset-phase-a.json
+
+    # This produces a file that, for each question, contains a set of (at most)
+    # 10 snippets. We'll use it with Lasige's BioASQ9B system to produce exact
+    # answers
+
+    python src/exact_answers.py \
+      results/testset-phase-a.json \
+      /path/to/lasige/bioasq9/ \
+      --output results/testset-exact-answers.json
     ```
 
-**Commands**
-```bash
-# Get the galago binary  (TODO)
+## Variations
 
-# Get the repository. In our case, we're using CORD-19  (TODO)
-
-python src/format_cord_for_galago.py \
-  --metadata "/path/to/cord/metadata.csv" \
-  --destination "/path/to/some/destination"
-
-bash src/build-galago-index.sh
-```
+The system has been tried in 4 different variations, which can be executed by selecting different options at each step. There are 4 variations.
 
 
+### Variation 1
+
+All the default options are used. The system, running from the code above, should result in this variation. In particular, in this system:
+
+- Documents are searched for in the galago index using a bag-of-words approach, where each word in the question weighs as much as any other, and their proximity in the question is entirely ignored
+
+- The score of each sentence, with respect to the question, is the raw output logit output of the qs-model trained in Step 3.
 
 
-**Requirements**:
-- [ ] Margarida's code and checkpoints
+### Variant 2
+
+In this system:
+
+- Noun chunks in the question are grouped in #sdm(...) constructs. This is achieved by passing the `--noun-chunk sdm` command line argument to the `src/retrieve/retrieve.py` script.
+
+- The score of each sentence, with respect to the question, is the raw output logit output of the qs-model trained in Step 3.
 
 
+### Variant 3
+
+- Noun chunks in the question are grouped in #sdm(...) constructs. This is achieved by passing the `--noun-chunk sdm` command line argument to the `src/retrieve/retrieve.py` script.
+
+- The score of each sentence, with respect to the question, is the raw output logit output of the qs-model trained in Step 3 multiplied by the galago score of the document from where the sentence came from. This is achieved by passing the `--multiply-document` and `--galago-results results/testset-galago-results.json` command line arguments to the `src/sentence_classification/choose_snippet.py` script.
 
 
+### Variant 4
 
+- The galago index search is performed not with the BM25 score, but with the Dirichlet score. This is achieved by omitting the `--scorer bm25` command line argument from the `src/retrieve/retrieve.py` script.
 
+- Noun chunks in the question are grouped in #sdm(...) constructs. This is achieved by passing the `--noun-chunk sdm` command line argument to the `src/retrieve/retrieve.py` script.
 
-
-
-
-
-
-## System descriptions
-
-System 1
-
-- Use galago to retrieve documents
-  - all useful tokens in a single #combine(...) bag
-- Split documents into sentences
-- Classify the relevance of each sentence to the question
-- Sentence score = classification of previous step
-- Choose documents based on the 10 highest scoring snippets
-- Answer with Margarida's non-fine tuned code
-
-
-System 2
-
-- Use galago to retrieve documents
-  - noun chunks in #sdm(...) constructs
-  - other non-chunked tokens
-  - all nested in a single #combine(...) bag
-- Split documents into sentences
-- Classify the relevance of each sentence to the question
-- Sentence score = classification of previous step
-- Choose documents based on the 10 highest scoring snippets
-- Answer with Margarida's non-fine tuned code
-
-
-System 3
-
-- Use galago to retrieve documents
-  - noun chunks in #sdm(...) constructs
-  - other non-chunked tokens
-  - all nested in a single #combine(...) bag
-- Split documents into sentences
-- Classify the relevance of each sentence to the question
-- Sentence score = classification of previous step * galago score
-- Choose documents based on the 10 highest scoring snippets
-- Answer with Margarida's non-fine tuned code
-
-
-System 4
-
-- Use galago to retrieve documents (Use dirichlet score)
-  - noun chunks in #sdm(...) constructs
-  - other non-chunked tokens
-  - all nested in a single #combine(...) bag
-- Split documents into sentences
-- Classify the relevance of each sentence to the question
-- Sentence score = classification of previous step * exp(galago score)
-- Choose documents based on the 10 highest scoring snippets
-- Answer with Margarida's non-fine tuned code
+- The score of each sentence, with respect to the question, is the raw output logit output of the qs-model trained in Step 3 multiplied by the galago score of the document from where the sentence came from. Because the galago score follows a logarithmic scale (that is thebehaviour of the Dirichlet formula), that score must first be exponentiated to a linear scale. All of this is achieved by passing the `--multiply-document`, `--galago-results results/testset-galago-results.json` and `--exponentiate` command line arguments to the `src/sentence_classification/choose_snippet.py` script.

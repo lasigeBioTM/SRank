@@ -81,10 +81,10 @@ def main() -> None:
 
     metadata = get_metadata(args.metadata)
 
-    output = [
+    output = {'questions': [
         convert_question(question, metadata)
         for question in data['questions']
-    ]
+    ]}
 
     if args.output:
         with open(args.output, 'w') as f:
