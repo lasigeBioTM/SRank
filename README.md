@@ -55,7 +55,7 @@ Use [Lasige's BioASQ9B](https://github.com/lasigeBioTM/BioASQ9B) system to find 
 
 ## Software requirements
 
-- A local installation of [galago](https://https://sourceforge.net/p/lemur/galago)
+- A local installation of [Galago](https://https://sourceforge.net/p/lemur/galago)
 
 - A clone of the [Lasige's BioASQ9B](https://github.com/lasigeBioTM/BioASQ9B) system. Ensure that you download the deep-learning model checkpoints mentioned in that repository.
 
@@ -77,6 +77,38 @@ Use [Lasige's BioASQ9B](https://github.com/lasigeBioTM/BioASQ9B) system to find 
 
 
 ## Workflow
+
+1. Get the Galago binary (for example, the [3.20 version](https://sourceforge.net/projects/lemur/files/lemur/galago-3.20/)). Untar and place the `galago-*-bin` directory directly inside the main directory of this repository.
+
+1. Get the repository. In case you are working with CORD19, you should follow the instructions in [Semantic Scholar's CORD19 Download page](https://www.semanticscholar.org/cord19/download) or in [their AWS historical releases page](https://ai2-semanticscholar-cord-19.s3-us-west-2.amazonaws.com/historical_releases.html), and download the most recent metadata file. As an example, you can download the [2021-07-05 metadata file](https://ai2-semanticscholar-cord-19.s3-us-west-2.amazonaws.com/2021-07-05/metadata.csv). You can place this in the directory you want.
+
+1. Format the repository in a way that can be understood by Galago. The `src/repository/format_cord_for_galago.py` script is prepared to format the CORD19 repository in a way that Galago can consume. If you want to format other repostories, use that script as an example of what needs to be done. Comments there can be guide you if you need some assistence. For our use case, the command was:
+
+    ```bash
+    python src/repository/format_cord_for_galago.py \
+      --metadata /path/to/metadata.csv \
+      --destination /path/to/galago-index
+    ```
+
+    You can chose whatever destination directory you want, as long as it does not exist.
+
+1. Edit the `config/galago-build-params.json` parameters so that the `"inputPath"` and `"indecPath"` properties point to where you placed your formatted documents and the place where you want the index to be built. In other words, `"inputPath"` is the directory chosen in the previous step, and `"indexPath"` is the (non-existing) directory where you want to place your index.
+
+1. Run `bash build_galago_index.sh`. This will take some time, particularly if you have hundreds of thousands of documents, and big documents to index. You should be able to monitor the state of the build in http://localhost:54321.
+
+1. Follow the golden standard links above to get a copy of the BioASQ answers from previous tasks. Place the files in the `data/` directory.
+
+1. Download the challenge file, containing the questions you want to answer. Place it in the `data/` directory.
+
+1. Clone the [BioASQ9B system](https://github.com/lasigeBioTM/BioASQ9B/) and consult the README file, and then follow the instructions there to download the model checkpoint files into the appropriate directories.
+
+1. Follow the code below, which will run `SRank`, produce a variety of intermediate files, and culminates in the creation of a file that associated to each question a set of papers and snippets.
+
+    Notice that all the python scripts have multiple command line arguments, which you can explore either by reading the source or running `python /path/to/script.py --help`
+
+    ```bash
+    python src/
+    ```
 
 **Commands**
 ```bash
