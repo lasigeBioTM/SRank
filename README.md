@@ -225,16 +225,16 @@ Use [Lasige's BioASQ9B](https://github.com/lasigeBioTM/BioASQ9B) system to find 
       data/testset.json \
       results/testset-ranked-sentences.jsonl \
       --top 10 \
-      --output results/testset-phase-a.json
+      --output results/testset-snippets.json
 
     # This produces a file that, for each question, contains a set of (at most)
     # 10 snippets. We'll use it with Lasige's BioASQ9B system to produce exact
     # answers
 
     python src/exact_answers.py \
-      results/testset-phase-a.json \
+      results/testset-snippets.json \
       /path/to/lasige/bioasq9/ \
-      --output results/testset-exact-answers.json
+      results/testset-exact-answers.json
     ```
 
 ## Variations
