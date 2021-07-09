@@ -115,7 +115,6 @@ def get_useful_tokens(sentence: typing.Any) -> list[str]:
 
 
 def useful_token(token: typing.Any) -> bool:
-    # type: ignore
     return not (
         token.is_bracket or
         token.is_currency or
